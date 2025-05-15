@@ -1,17 +1,23 @@
 package good.stuff.backend.soap;
 
 import good.stuff.backend.model.Country;
+import good.stuff.backend.model.CountryList;
 import jakarta.jws.WebService;
+
+import jakarta.xml.bind.JAXBContext;
+import jakarta.xml.bind.Unmarshaller;
+import jakarta.xml.bind.ValidationEvent;
+import jakarta.xml.bind.ValidationEventHandler;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.xpath.*;
-import org.w3c.dom.*;
-import org.w3c.dom.ls.DOMImplementationLS;
-import org.w3c.dom.ls.LSSerializer;
+import javax.xml.validation.Schema;
+import javax.xml.validation.SchemaFactory;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -30,8 +36,19 @@ public class CountrySearchServiceImpl implements CountrySearchService {
             // 1. Fetch country data from REST API filtered by term
             fetchAndSaveCountryData(term);
 
-            // 2. Use XPath on saved XML file to filter countries matching the term
-            return filterCountriesByTerm(term);
+            // 2. Validate XML with XSD from resources folder, parse to JAXB objects
+            List<Country> validCountries = validateAndParseCountries(xmlFile, "countries.xsd");
+
+            // 3. Filter valid countries by term (case-insensitive)
+            List<String> filteredXmlStrings = new ArrayList<>();
+            for (Country c : validCountries) {
+                if (c.getCode().toLowerCase().contains(term.toLowerCase()) ||
+                        c.getName().toLowerCase().contains(term.toLowerCase())) {
+                    // Convert Country object back to XML snippet string
+                    filteredXmlStrings.add(convertCountryToXml(c));
+                }
+            }
+            return filteredXmlStrings;
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -42,7 +59,6 @@ public class CountrySearchServiceImpl implements CountrySearchService {
     private void fetchAndSaveCountryData(String term) throws Exception {
         HttpClient client = HttpClient.newHttpClient();
 
-        // Replace with your actual API URL & key, add query param with 'term'
         String url = "https://your-rest-api.com/countries?search=" + term;
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -56,45 +72,42 @@ public class CountrySearchServiceImpl implements CountrySearchService {
             throw new RuntimeException("Failed to fetch countries: HTTP " + response.statusCode());
         }
 
-        // Save the raw XML or convert JSON -> XML depending on your API
         try (FileWriter writer = new FileWriter(xmlFile)) {
             writer.write(response.body());
         }
     }
 
-    private List<String> filterCountriesByTerm(String term) throws Exception {
-        List<String> result = new ArrayList<>();
+    private List<Country> validateAndParseCountries(File xmlFile, String xsdResourcePath) throws Exception {
+        JAXBContext jaxbContext = JAXBContext.newInstance(CountryList.class);
+        Unmarshaller unmarshaller = jaxbContext.createUnmarshaller();
 
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        DocumentBuilder builder = factory.newDocumentBuilder();
-        Document doc = builder.parse(xmlFile);
-
-        XPathFactory xpathFactory = XPathFactory.newInstance();
-        XPath xpath = xpathFactory.newXPath();
-
-        // XPath expression to find country nodes where Code or Name contains the term (case-insensitive)
-        String expression = String.format(
-                "//Country[contains(translate(Code, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '%s') " +
-                        "or contains(translate(Name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '%s')]",
-                term.toLowerCase(), term.toLowerCase());
-
-        XPathExpression expr = xpath.compile(expression);
-        NodeList nodes = (NodeList) expr.evaluate(doc, XPathConstants.NODESET);
-
-        for (int i = 0; i < nodes.getLength(); i++) {
-            Node countryNode = nodes.item(i);
-            // Convert node back to string (XML snippet)
-            String xmlString = nodeToString(countryNode);
-            result.add(xmlString);
+        // Load XSD schema from resources folder
+        SchemaFactory sf = SchemaFactory.newInstance("http://www.w3.org/2001/XMLSchema");
+        try (InputStream xsdStream = getClass().getClassLoader().getResourceAsStream(xsdResourcePath)) {
+            if (xsdStream == null) {
+                throw new RuntimeException("XSD schema file not found in resources: " + xsdResourcePath);
+            }
+            Schema schema = sf.newSchema(new javax.xml.transform.stream.StreamSource(xsdStream));
+            unmarshaller.setSchema(schema);
         }
 
-        return result;
+        unmarshaller.setEventHandler(new ValidationEventHandler() {
+            @Override
+            public boolean handleEvent(ValidationEvent event) {
+                System.err.println("Validation error: " + event.getMessage());
+                return false;  // stop unmarshalling on error
+            }
+        });
+
+        CountryList countries = (CountryList) unmarshaller.unmarshal(xmlFile);
+        return countries.getCountries();
     }
 
-    private String nodeToString(Node node) throws Exception {
-        DOMImplementationLS domImplementationLS = (DOMImplementationLS) node.getOwnerDocument()
-                .getImplementation().getFeature("LS", "3.0");
-        LSSerializer lsSerializer = domImplementationLS.createLSSerializer();
-        return lsSerializer.writeToString(node);
+    private String convertCountryToXml(Country country) throws Exception {
+        // Simple marshalling of single Country object to XML string
+        JAXBContext context = JAXBContext.newInstance(Country.class);
+        java.io.StringWriter sw = new java.io.StringWriter();
+        context.createMarshaller().marshal(country, sw);
+        return sw.toString();
     }
 }
