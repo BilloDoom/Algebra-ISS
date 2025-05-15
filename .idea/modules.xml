@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/Algebra-ISS.iml" filepath="$PROJECT_DIR$/Algebra-ISS.iml" />
+      <module fileurl="file://$PROJECT_DIR$/Frontend/Frontend.iml" filepath="$PROJECT_DIR$/Frontend/Frontend.iml" />
     </modules>
   </component>
 </project>
